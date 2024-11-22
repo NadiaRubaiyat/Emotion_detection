@@ -1,2 +1,3 @@
 # Emotion_detection
-Detecting emotion and making 
+Current status:
+a. bounding box established around eyes, nose and mouth
