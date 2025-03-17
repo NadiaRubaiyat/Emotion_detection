@@ -3,7 +3,7 @@ import pandas as pd
 import torch
 import numpy as np
 import random
-from setup_training_grayscale import transform, class_labels, ensure_dir_exists, DATASET_SUMMARY_PATH,DATALOADERS_PATH, KMUFED_FACE_DIR, KDEF_FACE_DIR, FER2013_FACE_DIR
+from setup_training_grayscale import transform, DATASET_SUMMARY_PATH,DATALOADERS_PATH, KMUFED_FACE_DIR, KDEF_FACE_DIR, FER2013_FACE_DIR
 from torch.utils.data import DataLoader, Subset
 from sklearn.model_selection import train_test_split
 from collections import Counter
@@ -21,7 +21,7 @@ if torch.cuda.is_available():
     torch.cuda.manual_seed(42)
 
 def create_datasets(dataset_path, dataset_class, dataset_name):
-    if dataset_name == "ckplus" or dataset_name == "fer2013":
+    if dataset_name == "fer2013":
         data_paths = dataset_path
         face_dir = FER2013_FACE_DIR
     elif dataset_name == "kmufed":
@@ -37,17 +37,19 @@ def create_datasets(dataset_path, dataset_class, dataset_name):
             for file in files:
                 if file.lower().endswith((".jpg", ".jpeg")):
                     emotion_code = file[4:6]
-                    if emotion_code in ['AF', 'AN', 'DI', 'HA', 'SA', 'SU']:  # Only select relevant emotions
+                    if emotion_code in ['AF', 'AN', 'DI', 'HA', 'SA', 'SU', 'NE']:  # Only select relevant emotions
                         full_path = os.path.join(root, file)
-                        data_paths.append(full_path)
-                                                         
+                        data_paths.append(full_path)                                              
     dataset_instance = dataset_class(dataset_name, data_paths, transform=transform, face_dir=face_dir)
     return dataset_instance
 
 def visualize_data(dataset, dataset_name, result_file, num_samples=6):
-
-    fig, axes = plt.subplots(2, num_samples, figsize=(3*num_samples, 6))
-
+    if dataset_name == "kmufed":
+        class_labels = ['Anger', 'Disgust', 'Fear', 'Happiness', 'Sadness', 'Surprise']
+    else:
+        class_labels = ['Anger', 'Disgust', 'Fear', 'Happiness', 'Sadness', 'Surprise', 'Neutral']
+        num_samples=7
+    fig, axes = plt.subplots(3, num_samples, figsize=(3*num_samples, 9))  # Three rows now
     label_selected = set()  # To keep track of selected labels
     selected_indices = []  # Store indices with unique labels
 
@@ -57,30 +59,42 @@ def visualize_data(dataset, dataset_name, result_file, num_samples=6):
 
     # Loop through the shuffled indices to find one image per label
     for idx in shuffled_indices:
-        _, label,_ = dataset[idx]
+        _, label = dataset[idx]
         if label not in label_selected:
             label_selected.add(label)
             selected_indices.append(idx)
-
         # Stop once we've selected enough samples
         if len(selected_indices) == num_samples:
             break
 
+    # Visualize the selected samples
     for i, idx in enumerate(selected_indices):
-        original_img = dataset.get_original_image(idx)
-        face_img = np.array(dataset.img_list[idx])
-        _ , label, _ = dataset[idx]
+        # Get original, cropped, and masked images
+        original_img = dataset.get_original_image(idx)  # Original grayscale image
+        cropped_img = np.array(dataset.cropped_faces[idx])  # Cropped face
+        masked_img = np.array(dataset.masked_faces[idx])  # Masked face
 
-        axes[0, i].imshow(np.array(original_img))  # Grayscale for original image
-        axes[0, i].set_title(f'Label: {class_labels[label]}')
+        _, label = dataset[idx]
+
+        # Plot original image
+        axes[0, i].imshow(np.array(original_img), cmap='gray')  # Grayscale for original image
+        axes[0, i].set_title(f'Original\nLabel: {class_labels[label]}')
         axes[0, i].axis('off')
 
-        axes[1, i].imshow(face_img, cmap='gray')  # Grayscale for face image
+        # Plot cropped face
+        axes[1, i].imshow(cropped_img, cmap='gray')  # Grayscale for cropped face
+        axes[1, i].set_title('Cropped Face')
         axes[1, i].axis('off')
 
-    plt.suptitle(f'{dataset_name} Dataset - Original image VS Extracted face (MTCNN)')
-    plt.savefig(f"{result_file}/Face_Detection_{dataset_name}")
-    plt.close()
+        # Plot masked face
+        axes[2, i].imshow(masked_img, cmap='gray')  # Grayscale for masked face
+        axes[2, i].set_title('Masked Face')
+        axes[2, i].axis('off')
+
+    plt.suptitle(f'{dataset_name} Dataset - Original vs Cropped vs Masked Faces')
+    plt.savefig(f"{result_file}/Face_Detection_{dataset_name}.png")
+    plt.show()
+
 
 def create_dataloaders(dataset, dataset_name, batch_size=64, test_size=0.3, val_size=0.5, random_state=42):
     indices = list(range(len(dataset)))
@@ -91,8 +105,13 @@ def create_dataloaders(dataset, dataset_name, batch_size=64, test_size=0.3, val_
     val_dataset = Subset(dataset, val_indices)
     test_dataset = Subset(dataset, test_indices)
 
+    dataset.set_mode('train')
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+
+    dataset.set_mode('val')
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
+    dataset.set_mode('test')
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     file_path = f'{DATALOADERS_PATH}/{dataset_name}_dataloader.pth'
@@ -112,17 +131,16 @@ def create_dataloaders(dataset, dataset_name, batch_size=64, test_size=0.3, val_
 
     print(f"\n{dataset_name} Dataset Summary:")
     print(tabulate([dataset_summary], headers="keys", tablefmt="pretty"))
-    dataset_summary_df = pd.DataFrame([dataset_summary])
 
+    dataset_summary_df = pd.DataFrame([dataset_summary])
     dataset_summary_file = DATASET_SUMMARY_PATH
     save_dataset_info(dataset_summary_df, train_count, val_count, test_count, dataset_summary_file, dataset_name)
-
     return train_loader, val_loader, test_loader
 
 def count_labels(dataset, job):
     label_counter = Counter()
     for idx in range(len(dataset)):
-        _, label, _ = dataset[idx]  # Only fetch the label, skip the image
+        _, label = dataset[idx]  # Only fetch the label, skip the image
         label_counter.update([label])  # Update the counter with the label
     print(f"{job} Count:")
     print(tabulate([label_counter], headers="keys", tablefmt="pretty"))
@@ -131,21 +149,13 @@ def count_labels(dataset, job):
     return labels_df
 
 def save_dataset_info(dataset_summary_df, train_labels_df, val_labels_df, test_labels_df, result_file, dataset_name):
-
-    # Create a CSV writer for the output file
     file_path = f"{result_file}/{dataset_name}_summary.csv"
-    with open(file_path, mode='w', newline='') as file:  
-
+    with open(file_path, mode='w', newline='') as file:
         dataset_summary_df.to_csv(file, index=False, lineterminator='\n')
-        
-        # Write Training Label Counts
+        file.write("\nNote: Attention masks are included for all samples.\n")
         file.write("Training Label Counts\n")
         train_labels_df.to_csv(file, index=False, lineterminator='\n')
-
-        # Write Validation Label Counts
         file.write("Validation Label Counts\n")
         val_labels_df.to_csv(file, index=False, lineterminator='\n')
-
-        # Write Testing Label Counts
         file.write("Testing Label Counts\n")
         test_labels_df.to_csv(file, index=False, lineterminator='\n')
