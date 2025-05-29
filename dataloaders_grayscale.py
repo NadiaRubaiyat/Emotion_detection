@@ -93,7 +93,7 @@ def visualize_data(dataset, dataset_name, result_file, num_samples=6):
 
     plt.suptitle(f'{dataset_name} Dataset - Original vs Cropped vs Masked Faces')
     plt.savefig(f"{result_file}/Face_Detection_{dataset_name}.png")
-    plt.show()
+    plt.close()
 
 
 def create_dataloaders(dataset, dataset_name, batch_size=64, test_size=0.3, val_size=0.5, random_state=42):
@@ -114,7 +114,7 @@ def create_dataloaders(dataset, dataset_name, batch_size=64, test_size=0.3, val_
     dataset.set_mode('test')
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
-    file_path = f'{DATALOADERS_PATH}/{dataset_name}_dataloader.pth'
+    file_path = f'{DATALOADERS_PATH}/{dataset_name}_dataloader_masked.pth'
     torch.save({'train_dataset': train_dataset, 'val_dataset': val_dataset, 'test_dataset': test_dataset}, file_path)
 
     train_count = count_labels(train_dataset, "Training")

@@ -1,19 +1,19 @@
-import torch
-import numpy as np
-import matplotlib.pyplot as plt
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, classification_report, accuracy_score
-import pandas as pd
 import os
-from torchvision.models import ResNet18_Weights, MobileNet_V2_Weights, EfficientNet_B0_Weights
-import torchvision.models as models
-import torch.nn as nn
-from setup_training_grayscale import num_epochs, device, ensure_dir_exists
-import torchvision.transforms as transforms
-from datetime import datetime
+import numpy as np
+import pandas as pd
 from tqdm import tqdm
+from datetime import datetime
+import matplotlib.pyplot as plt
+import torch
+import torch.nn as nn
 import torch.nn.functional as F
-import cv2
-from matplotlib.colors import Normalize
+import torchvision.models as models
+import torchvision.transforms as transforms
+from torchvision.models import ResNet18_Weights, MobileNet_V2_Weights, EfficientNet_B0_Weights
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, classification_report, accuracy_score
+from setup_training_grayscale import num_epochs, device, ensure_dir_exists
+
+
 
 def initialize_model(model_name, num_classes, weights=True):
     if model_name == "ResNet18":
@@ -61,12 +61,10 @@ def initialize_model(model_name, num_classes, weights=True):
     return model
 
 
-def train_model(model, train_loader, val_loader, model_name, dataset_name, result_file):
+def train_model(model, train_loader, val_loader, model_name, dataset_name, result_file, loss_dict):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    train_losses = []
-    val_losses = []
-    train_accuracies = []
-    val_accuracies = []
+    train_losses, val_losses = [], []
+    train_accuracies, val_accuracies = [], []
     
     best_val_accuracy = 0.0
     best_model_weights = None
@@ -80,8 +78,7 @@ def train_model(model, train_loader, val_loader, model_name, dataset_name, resul
     for epoch in range(num_epochs):
         model.train()  # Set model to training mode
         running_loss = 0.0
-        all_train_labels = []
-        all_train_preds = []
+        all_train_labels, all_train_preds = [], []
 
         for data, labels in train_loader:
             optimizer.zero_grad()
@@ -114,8 +111,7 @@ def train_model(model, train_loader, val_loader, model_name, dataset_name, resul
         # Validation
         model.eval()
         running_loss = 0.0
-        all_val_labels = []
-        all_val_preds = []
+        all_val_labels, all_val_preds = [], []
 
         with torch.no_grad():
             for inputs, labels in val_loader:
@@ -159,11 +155,19 @@ def train_model(model, train_loader, val_loader, model_name, dataset_name, resul
         "Train Accuracy": [acc * 100 for acc in train_accuracies],
         "Validation Accuracy": [acc * 100 for acc in val_accuracies]
     })
-    epoch_data.to_csv(f"{result_file}/training_validation_accuracies_{model_name}_{dataset_name}_{timestamp}.csv", index=False)
+    epoch_data.to_csv(f"{result_file}/training_validation_accuracies_{model_name}_{dataset_name}.csv", index=False)
+    # plot_losses(train_losses, val_losses, num_epochs, model_name, dataset_name, NORMAL_TRAINING_RESULTS_DIR)
+    
+    loss_dict[model_name] = {
+        "train_loss": train_losses,
+        "val_loss": val_losses,
+        "train_acc": train_accuracies,
+        "val_acc": val_accuracies
+    }
     torch.cuda.empty_cache()
     return model
 
-def train_model_fgsm(model, train_loader, val_loader, model_name, dataset_name, result_file, fgsm_image_dir, epsilon=0.5/255, alpha=0.5, num_epochs=50):
+def train_model_fgsm(model, train_loader, val_loader, model_name, dataset_name, result_file, fgsm_image_dir, loss_dict, epsilon=0.5/255, alpha=0.5, num_epochs=10):
     ensure_dir_exists(fgsm_image_dir)
     train_losses = []
     val_losses = []
@@ -261,6 +265,13 @@ def train_model_fgsm(model, train_loader, val_loader, model_name, dataset_name, 
         "Validation Accuracy": [acc * 100 for acc in val_accuracies]
     })
     epoch_data.to_csv(f"{result_file}/training_validation_accuracies_{model_name}_{dataset_name}.csv", index=False)
+    # plot_losses(train_losses, val_losses, num_epochs, model_name, dataset_name, FGSM_TRAINED_ATTACK_RESULTS_DIR)
+    loss_dict[model_name] = {
+        "train_loss": train_losses,
+        "val_loss": val_losses,
+        "train_acc": train_accuracies,
+        "val_acc": val_accuracies
+    }
     torch.cuda.empty_cache()
     return model
 
@@ -399,7 +410,7 @@ def evaluate_model(model, test_loader, dataset_name, model_name, result_file):
     disp_test = ConfusionMatrixDisplay(confusion_matrix=cm_test, display_labels=target_names)
     disp_test.plot(cmap=plt.cm.Blues, values_format='.2f')
     plt.title(f'Confusion Matrix for Test Set on {dataset_name} - {model_name}')
-    plt.savefig(f"{result_file}/Confusion_matrix_{dataset_name}_{model_name}_{timestamp}")
+    plt.savefig(f"{result_file}/Confusion_matrix_{dataset_name}_{model_name}")
     plt.close()
 
     # Calculate and print precision, recall, and F1-score for test set
@@ -408,7 +419,7 @@ def evaluate_model(model, test_loader, dataset_name, model_name, result_file):
     # Calculate and print accuracy for test set
     test_accuracy = accuracy_score(all_test_predictions, all_test_labels)
 
-    print(f"Test accuracy: {test_accuracy:.4f}")
+    # print(f"Test accuracy: {test_accuracy:.4f}")
 
     return test_accuracy, test_report
 
@@ -439,33 +450,38 @@ def generate_saliency_map(model, image, label):
 
     return saliency
 
-def visualize_saliency_map(image, saliency, save_path):
-    image = image.squeeze().cpu().numpy()
-    image = (image - image.min()) / (image.max() - image.min())  # Normalize to [0, 1]
+def visualize_saliency_map(image_saliency_list, save_path):
+    """
+    Plots input images and their corresponding saliency maps in two rows: 
+    - First row: Original input images 
+    - Second row: Corresponding saliency maps
+    """
+    num_samples = len(image_saliency_list)
+    fig, axes = plt.subplots(2, num_samples, figsize=(num_samples * 3, 6))
 
-    # Normalize the saliency map for overlay
-    saliency = (saliency - saliency.min()) / (saliency.max() - saliency.min())  # Normalize to [0, 1]
+    for idx, (image, saliency) in enumerate(image_saliency_list):
+        # Prepare input image
+        image = image.squeeze().cpu().numpy()
+        image = (image - image.min()) / (image.max() - image.min())
 
-    # Create a figure for overlay
-    plt.figure(figsize=(8, 8))
+        # Normalize saliency map
+        saliency = (saliency - saliency.min()) / (saliency.max() - saliency.min())
+        saliency_colormap = plt.get_cmap('jet')
+        saliency_color = saliency_colormap(saliency)[:, :, :3]
 
-    # Display the grayscale image
-    plt.imshow(image, cmap='gray', interpolation='nearest')
+        # Plot original image (Top row)
+        axes[0, idx].imshow(image, cmap='gray')
+        axes[0, idx].axis("off")
+        axes[0, idx].set_title(f"Image {idx+1}")
 
-    # # Overlay the saliency map using a colormap and transparency (alpha)
-    plt.imshow(
-        saliency,
-        cmap='jet',
-        norm=Normalize(vmin=0, vmax=1),
-        alpha=0.7  # Adjust transparency
-    )
+        # Plot saliency map (Bottom row)
+        axes[1, idx].imshow(saliency_color)
+        axes[1, idx].axis("off")
+        axes[1, idx].set_title(f"Saliency {idx+1}")
 
-    # Remove axes for clean visualization
-    plt.axis('off')
-
-    # Save the resulting overlay
-    plt.savefig(save_path, bbox_inches='tight', pad_inches=0)
-    plt.close()
+    plt.tight_layout()
+    plt.savefig(save_path, bbox_inches="tight", pad_inches=0)
+    plt.show()
 
 
 def load_model(dataset_name, model_name, directory):
@@ -490,26 +506,30 @@ def load_model(dataset_name, model_name, directory):
     model = model.to(device)
     return model
 
-def plot_losses(train_losses, val_losses, num_epochs, model_name, dataset_name, result_file):
-    if "kmufed" in dataset_name.lower():
-        count = 6
-    else:
-        count = 7
-    epochs = range(1, num_epochs + 1)
-    
-    plt.figure(figsize=(10, count))
-    plt.plot(epochs, train_losses, label="Training Loss")
-    plt.plot(epochs, val_losses, label="Validation Loss")
-    plt.title(f"Training and Validation Loss for {model_name} on {dataset_name}")
-    plt.xlabel("Epochs")
-    plt.ylabel("Loss")
-    plt.legend()
-    plt.grid(True)
 
-    # Save the plot
-    plot_path = f"{result_file}/loss_plot_{model_name}_{dataset_name}.png"
+def plot_combined_losses(all_losses, num_epochs, result_file):
+    """Generate a single figure with multiple rows (one per dataset) for Training & Validation Loss."""
+    num_datasets = len(all_losses)
+    fig, axes = plt.subplots(num_datasets, 3, figsize=(18, 5 * num_datasets))  # Rows = datasets, Columns = Models
+
+    for row_idx, (dataset_name, losses_dict) in enumerate(all_losses.items()):
+        for col_idx, (model_name, loss_data) in enumerate(losses_dict.items()):
+            epochs = range(1, num_epochs + 1)
+
+            # Loss Plot for Each Model
+            ax = axes[row_idx, col_idx] if num_datasets > 1 else axes[col_idx]  # Handle case for single dataset
+            ax.plot(epochs, loss_data["train_loss"], label="Training Loss", marker='o', color="tab:blue")
+            ax.plot(epochs, loss_data["val_loss"], label="Validation Loss", marker='s', color="tab:orange")
+            ax.set_title(f"{dataset_name} - {model_name}")
+            ax.set_xlabel("Epochs")
+            ax.set_ylabel("Loss")
+            ax.legend()
+            ax.grid(True)
+
+    plt.tight_layout()
+    plot_path = f"{result_file}/combined_loss_all_datasets.png"
     plt.savefig(plot_path)
-    plt.close()
+    print(f"Saved plot: {plot_path}")
 
 def save_perturbed_image(perturbed_image, index, output_dir, count):
     un_normalized_image = (perturbed_image + 1) / 2 
@@ -541,3 +561,15 @@ def pgd_attack(model, data, target, epsilon, alpha, num_iter):
         perturbed_data = torch.clamp(perturbed_data, -1, 1)
         perturbed_data = perturbed_data.detach().requires_grad_(True)
     return perturbed_data
+
+def load_training_data(csv_path):
+    df = pd.read_csv(csv_path)
+
+    losses = {
+        "train_loss": df["Train Loss"].tolist(),
+        "val_loss": df["Validation Loss"].tolist(),
+        "train_acc": df["Train Accuracy"].tolist(),
+        "val_acc": df["Validation Accuracy"].tolist(),
+    }
+
+    return losses

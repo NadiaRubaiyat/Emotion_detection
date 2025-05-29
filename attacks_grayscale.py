@@ -2,15 +2,14 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
-import torch.optim as optim 
 import numpy as np
 import random
 from tabulate import tabulate
 import pandas as pd
-import os
-from setup_training_grayscale import model_names, device, ensure_dir_exists, PERTURBED_IMAGES_DIR
+from setup_training_grayscale import model_names, ensure_dir_exists, PERTURBED_IMAGES_DIR
 from utils_grayscale import evaluate_model, load_model
 from PIL import Image
+import os
 
 random.seed(42)
 np.random.seed(42)
@@ -18,7 +17,7 @@ torch.manual_seed(42)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(42)
 
-def save_batch(image_tensor_batch, count, output_dir, prefix="image", batch_idx=0):
+def save_batch(image_tensor_batch, count, output_dir, prefix="image", batch_idx=0, epsilon=0):
 
     # Unnormalize the entire batch from [-1, 1] to [0, 1]
     unnormalized_images = image_tensor_batch * 0.5 + 0.5  # Undo normalization for entire batch
@@ -37,7 +36,7 @@ def save_batch(image_tensor_batch, count, output_dir, prefix="image", batch_idx=
         # Save the image with a unique name based on count and batch index
         transformed_save_dir = f'{output_dir}'
         ensure_dir_exists(transformed_save_dir)  # Ensure directory exists
-        unnormalized_image_pil.save(f"{transformed_save_dir}/{prefix}_{count + i}.png")
+        unnormalized_image_pil.save(f"{transformed_save_dir}/{prefix}_{count + i}_{epsilon}.png")
 
 def fgsm_attack(data, epsilon, data_grad):
     sign_data_grad = data_grad.sign()
@@ -122,7 +121,7 @@ def generate_adversarial_examples(model, device, test_loader, epsilon, alpha, nu
         adversarial_examples.append(perturbed_data)
         adversarial_labels.append(target)
 
-        save_batch(perturbed_data, count, f"{PERTURBED_IMAGES_DIR}/{dataset_name}/{attack_name}_images", prefix=f"adv_{attack_name}_{count}", batch_idx=idx)
+        save_batch(perturbed_data, count, f"{PERTURBED_IMAGES_DIR}/{dataset_name}/{attack_name}_images", prefix=f"adv_{attack_name}_{count}", batch_idx=idx, epsilon=epsilon)
         count += data.size(0)
 
     # Combine examples and create DataLoader
@@ -134,34 +133,78 @@ def generate_adversarial_examples(model, device, test_loader, epsilon, alpha, nu
     return adversarial_loader
 
 
+
 def run_attack(test_loader, result_file, dataset_name, attacks, device, model_dir):
     epsilon_values = [0, 0.2/255, 0.4/255, 0.6/255, 0.8/255, 1/255]
+    epsilon_labels = [f"{float(eps * 255)}/255" for eps in epsilon_values]  # Format for labeling
     alpha = 1
     num_iterations = 50
 
+    attack_results = {}
+
     for attack_name in attacks:
-        results = {"epsilon": [], f"{attack_name}_ResNet18": [], f"{attack_name}_MobileNetV2": [], f"{attack_name}_EfficientNetB0": []}
-        
-        # Run FGSM, BIM, or PGD
-        for i in range(len(epsilon_values)):
-            numerator = float(epsilon_values[i] * 255)
-            results["epsilon"].append(f"{numerator}/255")
-        # Apply the attack on all the models
+        results = {"epsilon": epsilon_labels}  # Initialize results dictionary
+
         for model_name in model_names:
+            results[f"{attack_name}_{model_name}"] = []  # Store accuracy per model
             model = load_model(dataset_name, model_name, model_dir)
-            dataname = f"{attack_name}_" + model_name
+
             for epsilon in epsilon_values:
-                adversarial_test_loader = generate_adversarial_examples(model, device, test_loader, epsilon, alpha, num_iterations, attack_name, dataset_name)
+                adversarial_test_loader = generate_adversarial_examples(
+                    model, device, test_loader, epsilon, alpha, num_iterations, attack_name, dataset_name
+                )
                 result_file_cm = f"{result_file}/Confusion_Matrix"
                 ensure_dir_exists(result_file_cm)
-                adv_accuracy, adv_report = evaluate_model(model, adversarial_test_loader, dataset_name, model_name, result_file_cm)
-                results[dataname].append(f"{adv_accuracy * 100:.2f}%")
-            torch.cuda.empty_cache()
-        # Print the results
-        print(f"Results of the {attack_name} attack on {dataset_name} dataset:")
-        print(tabulate(results, headers="keys", tablefmt="pretty"))
-        
-        # Save results if needed
-        torch.cuda.empty_cache()
 
-    return results
+                adv_accuracy, adv_report = evaluate_model(
+                    model, adversarial_test_loader, dataset_name, model_name, result_file_cm
+                )
+
+                results[f"{attack_name}_{model_name}"].append(adv_accuracy * 100)  # Store accuracy percentage
+
+            torch.cuda.empty_cache()
+
+        # Convert results to DataFrame
+        df_results = pd.DataFrame(results)
+        attack_results[attack_name] = df_results  # Store per attack type
+
+        csv_path = os.path.join(result_file, f"{attack_name}_attack_results_{dataset_name}.csv")
+        df_results.to_csv(csv_path, index=False)
+        print(f"Saved attack results to {csv_path}")
+
+        print(f"Results of the {attack_name} attack on {dataset_name} dataset:")
+        print(df_results.to_string(index=False))
+
+    # Generate a single plot with three subplots
+    plot_attack_results_combined(attack_results, dataset_name, result_file)
+
+    return attack_results
+
+
+def plot_attack_results_combined(attack_results, dataset_name, result_file):
+    """Generate a single figure with three subplots showing accuracy degradation for FGSM, BIM, and PGD attacks."""
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))  # 1 row, 3 columns
+
+    for idx, (attack_name, df_results) in enumerate(attack_results.items()):
+        ax = axes[idx]
+
+        for col in df_results.columns:
+            if col != "epsilon":  # Avoid plotting epsilon values
+                ax.plot(df_results["epsilon"], df_results[col], marker='o', label=col.replace(f"{attack_name}_", ""))
+
+        ax.set_xlabel("Epsilon (Perturbation Strength)")
+        ax.set_ylabel("Accuracy (%)")
+        ax.set_title(f"{attack_name.upper()} Attack")
+        ax.legend()
+        ax.grid(True)
+
+    # Adjust layout for better spacing
+    plt.tight_layout()
+
+    # Save the figure
+    plot_path = f"{result_file}/combined_attack_accuracy_drop_{dataset_name}.png"
+    plt.savefig(plot_path)
+    print(f"Saved plot: {plot_path}")
+
+    plt.close()
+
