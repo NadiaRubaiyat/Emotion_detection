@@ -22,14 +22,14 @@ Facial emotion recognition is critical in monitoring driver states in ADAS. Howe
 ## 📁 Project Structure
 
 - emotion-detection
-─ models # Model architectures
-─ data # Preprocessing scripts
-─ attacks # FGSM, BIM, PGD attack implementations
-─ defense # Adversarial training & attention masking
-─ utils # Helper functions
-─ notebooks # Jupyter notebooks for experiments
-─ results # Plots, confusion matrices, saliency maps
-─ main.py # Main training & evaluation script
+- models # Model architectures
+- data # Preprocessing scripts
+- attacks # FGSM, BIM, PGD attack implementations
+- defense # Adversarial training & attention masking
+- utils # Helper functions
+- notebooks # Jupyter notebooks for experiments
+- results # Plots, confusion matrices, saliency maps
+- main.py # Main training & evaluation script
 
 ## ⚙️ Requirements
 
